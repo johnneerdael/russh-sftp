@@ -7,7 +7,7 @@ use std::{
 };
 
 use russh_sftp::{
-    client::SftpSession,
+    client::{fs::RandomAccessFile, SftpSession},
     protocol::{Attrs, Data, File, FileAttributes, Handle, Name, OpenFlags, Status, StatusCode},
     server,
 };
@@ -193,7 +193,7 @@ async fn test_session(backend: TestBackend) -> SftpSession {
 #[tokio::test]
 async fn write_at_persists_two_disjoint_ranges() {
     let session = test_session(TestBackend::default()).await;
-    let file = session
+    let file: RandomAccessFile = session
         .open_random_access_with_flags(
             "/ranges.bin",
             OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::READ | OpenFlags::WRITE,
@@ -220,7 +220,11 @@ async fn read_at_returns_requested_range_without_mutating_seek_position() {
 
     file.write_all(b"0123456789abcdef").await.unwrap();
     file.rewind().await.unwrap();
-    let slice = file.read_at(4, 4).await.unwrap();
+    let reader: RandomAccessFile = session
+        .open_random_access_with_flags("/seek.bin", OpenFlags::READ)
+        .await
+        .unwrap();
+    let slice = reader.read_at(4, 4).await.unwrap();
     let position = file.stream_position().await.unwrap();
     let mut sequential = [0_u8; 4];
     file.read_exact(&mut sequential).await.unwrap();
@@ -233,14 +237,14 @@ async fn read_at_returns_requested_range_without_mutating_seek_position() {
 #[tokio::test]
 async fn concurrent_handles_can_write_disjoint_ranges_without_corruption() {
     let session = test_session(TestBackend::default()).await;
-    let left = session
+    let left: RandomAccessFile = session
         .open_random_access_with_flags(
             "/concurrent.bin",
             OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::READ | OpenFlags::WRITE,
         )
         .await
         .unwrap();
-    let right = session
+    let right: RandomAccessFile = session
         .open_random_access_with_flags("/concurrent.bin", OpenFlags::READ | OpenFlags::WRITE)
         .await
         .unwrap();
@@ -256,7 +260,7 @@ async fn concurrent_handles_can_write_disjoint_ranges_without_corruption() {
 #[tokio::test]
 async fn chunked_write_and_read_reassembles_expected_bytes() {
     let session = test_session(TestBackend::default()).await;
-    let file = session
+    let file: RandomAccessFile = session
         .open_random_access_with_flags(
             "/chunks.bin",
             OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::READ | OpenFlags::WRITE,

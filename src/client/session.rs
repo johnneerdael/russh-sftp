@@ -3,7 +3,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use super::{
     error::Error,
-    fs::{File, Metadata, ReadDir},
+    fs::{File, Metadata, RandomAccessFile, ReadDir},
     rawsession::{Limits, SftpResult},
     RawSftpSession,
 };
@@ -100,7 +100,10 @@ impl SftpSession {
     }
 
     /// Attempts to open a file in read-only mode for offset-based access.
-    pub async fn open_random_access<T: Into<String>>(&self, filename: T) -> SftpResult<File> {
+    pub async fn open_random_access<T: Into<String>>(
+        &self,
+        filename: T,
+    ) -> SftpResult<RandomAccessFile> {
         self.open_random_access_with_flags(filename, OpenFlags::READ)
             .await
     }
@@ -119,7 +122,10 @@ impl SftpSession {
     /// Opens a file in read-write mode for offset-based access.
     ///
     /// This function will create a file if it does not exist, and will truncate it if it does.
-    pub async fn create_random_access<T: Into<String>>(&self, filename: T) -> SftpResult<File> {
+    pub async fn create_random_access<T: Into<String>>(
+        &self,
+        filename: T,
+    ) -> SftpResult<RandomAccessFile> {
         self.open_random_access_with_flags(
             filename,
             OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::WRITE | OpenFlags::READ,
@@ -142,7 +148,7 @@ impl SftpSession {
         &self,
         filename: T,
         flags: OpenFlags,
-    ) -> SftpResult<File> {
+    ) -> SftpResult<RandomAccessFile> {
         self.open_random_access_with_flags_and_attributes(filename, flags, FileAttributes::empty())
             .await
     }
@@ -169,9 +175,11 @@ impl SftpSession {
         filename: T,
         flags: OpenFlags,
         attributes: FileAttributes,
-    ) -> SftpResult<File> {
-        self.open_with_flags_and_attributes(filename, flags, attributes)
-            .await
+    ) -> SftpResult<RandomAccessFile> {
+        let file = self
+            .open_with_flags_and_attributes(filename, flags, attributes)
+            .await?;
+        Ok(RandomAccessFile::new(file))
     }
 
     /// Requests the remote party for the absolute from the relative path.

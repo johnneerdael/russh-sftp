@@ -2,7 +2,6 @@ use log::{info, LevelFilter};
 use russh::*;
 use russh_sftp::{client::SftpSession, protocol::OpenFlags};
 use std::sync::Arc;
-use tokio::io::AsyncWriteExt;
 
 struct Client;
 
@@ -14,6 +13,38 @@ impl client::Handler for Client {
         _server_public_key: &russh::keys::PublicKey,
     ) -> Result<bool, Self::Error> {
         Ok(true)
+    }
+}
+
+fn validate_round_trip(
+    prefix: &[u8],
+    whole: &[u8],
+    expected_prefix: &[u8],
+    expected_whole: &[u8],
+) -> anyhow::Result<()> {
+    anyhow::ensure!(prefix == expected_prefix, "prefix mismatch");
+    anyhow::ensure!(whole == expected_whole, "whole-file mismatch");
+    Ok(())
+}
+
+fn probe_success_message(prefix: &[u8], whole: &[u8]) -> anyhow::Result<&'static str> {
+    validate_round_trip(prefix, whole, b"alpha", b"alpha\0\0\0\0\0omega")?;
+    Ok("random-access probe round trip succeeded")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::probe_success_message;
+
+    #[test]
+    fn probe_success_message_requires_a_validated_round_trip() {
+        let message = probe_success_message(b"alpha", b"alpha\0\0\0\0\0omega").unwrap();
+        assert_eq!(message, "random-access probe round trip succeeded");
+    }
+
+    #[test]
+    fn probe_success_message_rejects_mismatched_bytes() {
+        assert!(probe_success_message(b"alpha", b"beta").is_err());
     }
 }
 
@@ -40,7 +71,7 @@ async fn main() {
     let sftp = SftpSession::new(channel.into_stream()).await.unwrap();
 
     let path = "random-access-probe.bin";
-    let mut file = sftp
+    let file = sftp
         .open_random_access_with_flags(
             path,
             OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::READ | OpenFlags::WRITE,
@@ -54,8 +85,10 @@ async fn main() {
     let prefix = file.read_at(0, 5).await.unwrap();
     let whole = file.read_at(0, 15).await.unwrap();
 
+    let success = probe_success_message(&prefix, &whole).unwrap();
     info!("prefix: {:?}", String::from_utf8_lossy(&prefix));
     info!("whole: {:?}", whole);
+    info!("{success}");
 
     file.shutdown().await.unwrap();
     sftp.remove_file(path).await.unwrap();

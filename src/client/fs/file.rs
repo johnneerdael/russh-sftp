@@ -93,8 +93,7 @@ impl File {
         self.session.fsync(self.handle.as_str()).await.map(|_| ())
     }
 
-    /// Reads up to `len` bytes from `offset` without changing the sequential cursor.
-    pub async fn read_at(&self, offset: u64, len: u32) -> SftpResult<Vec<u8>> {
+    pub(crate) async fn read_at(&self, offset: u64, len: u32) -> SftpResult<Vec<u8>> {
         let max_read_len = self
             .extensions
             .limits
@@ -135,8 +134,7 @@ impl File {
         Ok(data)
     }
 
-    /// Writes all bytes at `offset` without changing the sequential cursor.
-    pub async fn write_at(&self, offset: u64, buf: &[u8]) -> SftpResult<()> {
+    pub(crate) async fn write_at(&self, offset: u64, buf: &[u8]) -> SftpResult<()> {
         let max_write_len = self
             .extensions
             .limits
@@ -154,6 +152,43 @@ impl File {
         }
 
         Ok(())
+    }
+}
+
+/// Random-access wrapper for remote files.
+///
+/// This keeps offset-based I/O separate from sequential `File` access so the
+/// returned handle makes the access pattern explicit.
+pub struct RandomAccessFile {
+    file: File,
+}
+
+impl RandomAccessFile {
+    pub(crate) fn new(file: File) -> Self {
+        Self { file }
+    }
+
+    /// Reads up to `len` bytes from `offset` without changing the sequential cursor.
+    pub async fn read_at(&self, offset: u64, len: u32) -> SftpResult<Vec<u8>> {
+        self.file.read_at(offset, len).await
+    }
+
+    /// Writes all bytes at `offset` without changing the sequential cursor.
+    pub async fn write_at(&self, offset: u64, buf: &[u8]) -> SftpResult<()> {
+        self.file.write_at(offset, buf).await
+    }
+
+    /// Closes the underlying file handle.
+    pub async fn shutdown(self) -> SftpResult<()> {
+        let mut file = self.file;
+        let handle = file.handle.clone();
+        let result = file.session.close(handle).await.map(|_| ());
+
+        if result.is_ok() {
+            file.closed = true;
+        }
+
+        result
     }
 }
 

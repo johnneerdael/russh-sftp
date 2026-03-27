@@ -9,5 +9,5 @@ mod file;
 use crate::protocol::FileAttributes;
 
 pub use dir::{DirEntry, ReadDir};
-pub use file::File;
+pub use file::{File, RandomAccessFile};
 pub type Metadata = FileAttributes;
