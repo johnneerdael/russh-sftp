@@ -7,7 +7,7 @@ use std::{
 };
 
 use russh_sftp::{
-    client::{fs::RandomAccessFile, SftpSession},
+    client::{fs::RandomAccessFile, RawSftpSession, SftpSession},
     protocol::{Attrs, Data, File, FileAttributes, Handle, Name, OpenFlags, Status, StatusCode},
     server,
 };
@@ -190,6 +190,14 @@ async fn test_session(backend: TestBackend) -> SftpSession {
     SftpSession::new(client_stream).await.unwrap()
 }
 
+async fn test_raw_session(backend: TestBackend) -> RawSftpSession {
+    let (client_stream, server_stream) = duplex(64 * 1024);
+    server::run(server_stream, TestHandler::new(backend)).await;
+    let session = RawSftpSession::new(client_stream);
+    session.init().await.unwrap();
+    session
+}
+
 #[tokio::test]
 async fn write_at_persists_two_disjoint_ranges() {
     let session = test_session(TestBackend::default()).await;
@@ -277,4 +285,36 @@ async fn chunked_write_and_read_reassembles_expected_bytes() {
     let assembled = file.read_at(0, expected.len() as u32).await.unwrap();
 
     assert_eq!(assembled, expected);
+}
+
+#[tokio::test]
+async fn rawsession_chunked_offset_helpers_round_trip_bytes() {
+    let session = test_raw_session(TestBackend::default()).await;
+    let handle = session
+        .open(
+            "/raw-chunks.bin",
+            OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::READ | OpenFlags::WRITE,
+            FileAttributes::empty(),
+        )
+        .await
+        .unwrap()
+        .handle;
+
+    let mut expected = vec![b'x'; 150_000];
+    expected.extend(vec![b'y'; 150_000]);
+    expected.extend(vec![b'z'; 32]);
+
+    session
+        .write_all_at(handle.as_str(), 0, &expected)
+        .await
+        .unwrap();
+
+    let assembled = session
+        .read_at(handle.as_str(), 0, expected.len() as u32)
+        .await
+        .unwrap();
+
+    assert_eq!(assembled, expected);
+
+    session.close(handle).await.unwrap();
 }
