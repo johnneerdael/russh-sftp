@@ -388,7 +388,7 @@ impl RawSftpSession {
             .unwrap_or(MAX_READ_LENGTH)
             .max(1);
 
-        let mut data = Vec::with_capacity(len as usize);
+        let mut data = Vec::with_capacity((len as usize).min(max_read_len as usize));
         let mut next_offset = offset;
         let mut remaining = len as u64;
 
@@ -404,10 +404,6 @@ impl RawSftpSession {
                     next_offset += chunk.data.len() as u64;
                     remaining -= chunk.data.len() as u64;
                     data.extend_from_slice(&chunk.data);
-
-                    if chunk.data.len() < chunk_len as usize {
-                        break;
-                    }
                 }
                 Err(Error::Status(status)) if status.status_code == StatusCode::Eof => break,
                 Err(error) => return Err(error),
