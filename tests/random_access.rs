@@ -7,7 +7,7 @@ use std::{
 };
 
 use russh_sftp::{
-    client::{fs::RandomAccessFile, RawSftpSession, SftpSession},
+    client::{fs::RandomAccessFile, rawsession::Limits, RawSftpSession, SftpSession},
     protocol::{Attrs, Data, File, FileAttributes, Handle, Name, OpenFlags, Status, StatusCode},
     server,
 };
@@ -20,6 +20,18 @@ use tokio::{
 struct TestBackend {
     files: Arc<Mutex<HashMap<String, Vec<u8>>>>,
     next_handle: Arc<AtomicUsize>,
+    read_requests: Arc<Mutex<Vec<u32>>>,
+    write_requests: Arc<Mutex<Vec<u32>>>,
+    short_reads_remaining: Arc<Mutex<usize>>,
+}
+
+impl TestBackend {
+    fn with_short_reads(short_reads_remaining: usize) -> Self {
+        Self {
+            short_reads_remaining: Arc::new(Mutex::new(short_reads_remaining)),
+            ..Self::default()
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -87,13 +99,29 @@ impl server::Handler for TestHandler {
 
         let files = self.backend.files.lock().await;
         let data = files.get(&path).ok_or(StatusCode::NoSuchFile)?;
+        self.backend.read_requests.lock().await.push(len);
         let start = offset as usize;
 
         if start >= data.len() {
             return Err(StatusCode::Eof);
         }
 
-        let end = (start + len as usize).min(data.len());
+        let requested = len as usize;
+        let should_short_read = {
+            let mut short_reads_remaining = self.backend.short_reads_remaining.lock().await;
+            if *short_reads_remaining > 0 {
+                *short_reads_remaining -= 1;
+                true
+            } else {
+                false
+            }
+        };
+        let read_len = if should_short_read {
+            requested.saturating_div(2).max(1)
+        } else {
+            requested
+        };
+        let end = (start + read_len).min(data.len());
         Ok(Data {
             id,
             data: data[start..end].to_vec(),
@@ -117,6 +145,11 @@ impl server::Handler for TestHandler {
 
         let mut files = self.backend.files.lock().await;
         let file = files.get_mut(&path).ok_or(StatusCode::NoSuchFile)?;
+        self.backend
+            .write_requests
+            .lock()
+            .await
+            .push(data.len() as u32);
         let start = offset as usize;
         let end = start + data.len();
 
@@ -194,6 +227,23 @@ async fn test_raw_session(backend: TestBackend) -> RawSftpSession {
     let (client_stream, server_stream) = duplex(64 * 1024);
     server::run(server_stream, TestHandler::new(backend)).await;
     let session = RawSftpSession::new(client_stream);
+    session.init().await.unwrap();
+    session
+}
+
+async fn test_raw_session_with_limits(
+    backend: TestBackend,
+    read_len: u64,
+    write_len: u64,
+) -> RawSftpSession {
+    let (client_stream, server_stream) = duplex(64 * 1024);
+    server::run(server_stream, TestHandler::new(backend)).await;
+    let mut session = RawSftpSession::new(client_stream);
+    session.set_limits(Arc::new(Limits {
+        read_len: Some(read_len),
+        write_len: Some(write_len),
+        open_handles: None,
+    }));
     session.init().await.unwrap();
     session
 }
@@ -315,6 +365,46 @@ async fn rawsession_chunked_offset_helpers_round_trip_bytes() {
         .unwrap();
 
     assert_eq!(assembled, expected);
+
+    session.close(handle).await.unwrap();
+}
+
+#[tokio::test]
+async fn rawsession_continues_after_short_successful_read_and_respects_configured_chunk_limits() {
+    let backend = TestBackend::with_short_reads(1);
+    let session = test_raw_session_with_limits(backend.clone(), 40_000, 32_000).await;
+    let handle = session
+        .open(
+            "/limited.bin",
+            OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::READ | OpenFlags::WRITE,
+            FileAttributes::empty(),
+        )
+        .await
+        .unwrap()
+        .handle;
+
+    let mut expected = vec![b'a'; 50_000];
+    expected.extend(vec![b'b'; 50_000]);
+    expected.extend(vec![b'c'; 50_000]);
+
+    session
+        .write_all_at(handle.as_str(), 0, &expected)
+        .await
+        .unwrap();
+
+    let written_chunks = backend.write_requests.lock().await.clone();
+    assert!(written_chunks.len() > 1);
+    assert!(written_chunks.iter().all(|len| *len <= 32_000));
+
+    let assembled = session
+        .read_at(handle.as_str(), 0, expected.len() as u32)
+        .await
+        .unwrap();
+
+    let read_chunks = backend.read_requests.lock().await.clone();
+    assert_eq!(assembled, expected);
+    assert!(read_chunks.len() > 1);
+    assert!(read_chunks.iter().all(|len| *len <= 40_000));
 
     session.close(handle).await.unwrap();
 }
