@@ -12,14 +12,16 @@ use tokio::{
 
 use super::Metadata;
 use crate::{
-    client::{error::Error, rawsession::SftpResult, session::Extensions, RawSftpSession},
+    client::{
+        error::Error,
+        rawsession::{SftpResult, MAX_READ_LENGTH, MAX_WRITE_LENGTH},
+        session::Extensions,
+        RawSftpSession,
+    },
     protocol::StatusCode,
 };
 
 type StateFn<T> = Option<Pin<Box<dyn Future<Output = io::Result<T>> + Send + Sync + 'static>>>;
-
-const MAX_READ_LENGTH: u64 = 261120;
-const MAX_WRITE_LENGTH: u64 = 261120;
 
 struct FileState {
     f_read: StateFn<Option<Vec<u8>>>,
@@ -94,64 +96,15 @@ impl File {
     }
 
     pub(crate) async fn read_at(&self, offset: u64, len: u32) -> SftpResult<Vec<u8>> {
-        let max_read_len = self
-            .extensions
-            .limits
-            .as_ref()
-            .and_then(|l| l.read_len)
-            .unwrap_or(MAX_READ_LENGTH);
-
-        let mut data = Vec::with_capacity(len as usize);
-        let mut next_offset = offset;
-        let mut remaining = len as u64;
-
-        while remaining > 0 {
-            let chunk_len = remaining.min(max_read_len) as u32;
-
-            match self
-                .session
-                .read(self.handle.as_str(), next_offset, chunk_len)
-                .await
-            {
-                Ok(chunk) => {
-                    if chunk.data.is_empty() {
-                        break;
-                    }
-
-                    next_offset += chunk.data.len() as u64;
-                    remaining -= chunk.data.len() as u64;
-                    data.extend_from_slice(&chunk.data);
-
-                    if chunk.data.len() < chunk_len as usize {
-                        break;
-                    }
-                }
-                Err(Error::Status(status)) if status.status_code == StatusCode::Eof => break,
-                Err(error) => return Err(error),
-            }
-        }
-
-        Ok(data)
+        self.session
+            .read_at(self.handle.as_str(), offset, len)
+            .await
     }
 
     pub(crate) async fn write_at(&self, offset: u64, buf: &[u8]) -> SftpResult<()> {
-        let max_write_len = self
-            .extensions
-            .limits
-            .as_ref()
-            .and_then(|l| l.write_len)
-            .unwrap_or(MAX_WRITE_LENGTH) as usize;
-
-        let mut next_offset = offset;
-
-        for chunk in buf.chunks(max_write_len) {
-            self.session
-                .write(self.handle.as_str(), next_offset, chunk.to_vec())
-                .await?;
-            next_offset += chunk.len() as u64;
-        }
-
-        Ok(())
+        self.session
+            .write_all_at(self.handle.as_str(), offset, buf)
+            .await
     }
 }
 

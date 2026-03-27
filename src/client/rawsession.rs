@@ -28,6 +28,8 @@ use crate::{
 
 pub type SftpResult<T> = Result<T, Error>;
 type SharedRequests = HashMap<Option<u32>, mpsc::Sender<SftpResult<Packet>>>;
+pub(crate) const MAX_READ_LENGTH: u64 = 261120;
+pub(crate) const MAX_WRITE_LENGTH: u64 = 261120;
 
 pub(crate) struct SessionInner {
     version: Option<u32>,
@@ -370,6 +372,73 @@ impl RawSftpSession {
             .await?;
 
         into_status!(result)
+    }
+
+    pub async fn read_at<H: Into<String>>(
+        &self,
+        handle: H,
+        offset: u64,
+        len: u32,
+    ) -> SftpResult<Vec<u8>> {
+        let handle = handle.into();
+        let max_read_len = self
+            .options
+            .limits
+            .read_len
+            .unwrap_or(MAX_READ_LENGTH)
+            .max(1);
+
+        let mut data = Vec::with_capacity(len as usize);
+        let mut next_offset = offset;
+        let mut remaining = len as u64;
+
+        while remaining > 0 {
+            let chunk_len = remaining.min(max_read_len) as u32;
+
+            match self.read(handle.as_str(), next_offset, chunk_len).await {
+                Ok(chunk) => {
+                    if chunk.data.is_empty() {
+                        break;
+                    }
+
+                    next_offset += chunk.data.len() as u64;
+                    remaining -= chunk.data.len() as u64;
+                    data.extend_from_slice(&chunk.data);
+
+                    if chunk.data.len() < chunk_len as usize {
+                        break;
+                    }
+                }
+                Err(Error::Status(status)) if status.status_code == StatusCode::Eof => break,
+                Err(error) => return Err(error),
+            }
+        }
+
+        Ok(data)
+    }
+
+    pub async fn write_all_at<H: Into<String>>(
+        &self,
+        handle: H,
+        offset: u64,
+        data: &[u8],
+    ) -> SftpResult<()> {
+        let max_write_len = self
+            .options
+            .limits
+            .write_len
+            .unwrap_or(MAX_WRITE_LENGTH)
+            .max(1) as usize;
+
+        let mut next_offset = offset;
+        let handle = handle.into();
+
+        for chunk in data.chunks(max_write_len) {
+            self.write(handle.as_str(), next_offset, chunk.to_vec()).await?;
+            next_offset += chunk.len() as u64;
+        }
+
+        Ok(())
     }
 
     pub async fn lstat<P: Into<String>>(&self, path: P) -> SftpResult<Attrs> {
