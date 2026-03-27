@@ -99,6 +99,12 @@ impl SftpSession {
         self.open_with_flags(filename, OpenFlags::READ).await
     }
 
+    /// Attempts to open a file in read-only mode for offset-based access.
+    pub async fn open_random_access<T: Into<String>>(&self, filename: T) -> SftpResult<File> {
+        self.open_random_access_with_flags(filename, OpenFlags::READ)
+            .await
+    }
+
     /// Opens a file in write-only mode.
     ///
     /// This function will create a file if it does not exist, and will truncate it if it does.
@@ -110,6 +116,17 @@ impl SftpSession {
         .await
     }
 
+    /// Opens a file in read-write mode for offset-based access.
+    ///
+    /// This function will create a file if it does not exist, and will truncate it if it does.
+    pub async fn create_random_access<T: Into<String>>(&self, filename: T) -> SftpResult<File> {
+        self.open_random_access_with_flags(
+            filename,
+            OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::WRITE | OpenFlags::READ,
+        )
+        .await
+    }
+
     /// Attempts to open or create the file in the specified mode
     pub async fn open_with_flags<T: Into<String>>(
         &self,
@@ -117,6 +134,16 @@ impl SftpSession {
         flags: OpenFlags,
     ) -> SftpResult<File> {
         self.open_with_flags_and_attributes(filename, flags, FileAttributes::empty())
+            .await
+    }
+
+    /// Attempts to open or create the file in the specified mode for offset-based access.
+    pub async fn open_random_access_with_flags<T: Into<String>>(
+        &self,
+        filename: T,
+        flags: OpenFlags,
+    ) -> SftpResult<File> {
+        self.open_random_access_with_flags_and_attributes(filename, flags, FileAttributes::empty())
             .await
     }
 
@@ -133,6 +160,18 @@ impl SftpSession {
             handle,
             self.extensions.clone(),
         ))
+    }
+
+    /// Attempts to open or create the file in the specified mode and with specified file attributes
+    /// for offset-based access.
+    pub async fn open_random_access_with_flags_and_attributes<T: Into<String>>(
+        &self,
+        filename: T,
+        flags: OpenFlags,
+        attributes: FileAttributes,
+    ) -> SftpResult<File> {
+        self.open_with_flags_and_attributes(filename, flags, attributes)
+            .await
     }
 
     /// Requests the remote party for the absolute from the relative path.

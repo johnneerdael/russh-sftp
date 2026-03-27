@@ -92,6 +92,69 @@ impl File {
 
         self.session.fsync(self.handle.as_str()).await.map(|_| ())
     }
+
+    /// Reads up to `len` bytes from `offset` without changing the sequential cursor.
+    pub async fn read_at(&self, offset: u64, len: u32) -> SftpResult<Vec<u8>> {
+        let max_read_len = self
+            .extensions
+            .limits
+            .as_ref()
+            .and_then(|l| l.read_len)
+            .unwrap_or(MAX_READ_LENGTH);
+
+        let mut data = Vec::with_capacity(len as usize);
+        let mut next_offset = offset;
+        let mut remaining = len as u64;
+
+        while remaining > 0 {
+            let chunk_len = remaining.min(max_read_len) as u32;
+
+            match self
+                .session
+                .read(self.handle.as_str(), next_offset, chunk_len)
+                .await
+            {
+                Ok(chunk) => {
+                    if chunk.data.is_empty() {
+                        break;
+                    }
+
+                    next_offset += chunk.data.len() as u64;
+                    remaining -= chunk.data.len() as u64;
+                    data.extend_from_slice(&chunk.data);
+
+                    if chunk.data.len() < chunk_len as usize {
+                        break;
+                    }
+                }
+                Err(Error::Status(status)) if status.status_code == StatusCode::Eof => break,
+                Err(error) => return Err(error),
+            }
+        }
+
+        Ok(data)
+    }
+
+    /// Writes all bytes at `offset` without changing the sequential cursor.
+    pub async fn write_at(&self, offset: u64, buf: &[u8]) -> SftpResult<()> {
+        let max_write_len = self
+            .extensions
+            .limits
+            .as_ref()
+            .and_then(|l| l.write_len)
+            .unwrap_or(MAX_WRITE_LENGTH) as usize;
+
+        let mut next_offset = offset;
+
+        for chunk in buf.chunks(max_write_len) {
+            self.session
+                .write(self.handle.as_str(), next_offset, chunk.to_vec())
+                .await?;
+            next_offset += chunk.len() as u64;
+        }
+
+        Ok(())
+    }
 }
 
 impl Drop for File {
