@@ -1,5 +1,5 @@
 use log::{error, info, LevelFilter};
-use russh::keys::ssh_key::rand_core::OsRng;
+use russh::keys::{Algorithm, PrivateKey};
 use russh::server::{Auth, Msg, Server as _, Session};
 use russh::{Channel, ChannelId};
 use russh_sftp::protocol::{File, FileAttributes, Handle, Name, Status, StatusCode, Version};
@@ -177,9 +177,7 @@ async fn main() {
     let config = russh::server::Config {
         auth_rejection_time: Duration::from_secs(3),
         auth_rejection_time_initial: Some(Duration::from_secs(0)),
-        keys: vec![
-            russh::keys::PrivateKey::random(&mut OsRng, russh::keys::Algorithm::Ed25519).unwrap(),
-        ],
+        keys: vec![PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap()],
         ..Default::default()
     };
 
