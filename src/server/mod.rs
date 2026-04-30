@@ -8,6 +8,7 @@ pub use self::handler::Handler;
 use crate::{
     error::Error,
     protocol::{Packet, StatusCode},
+    utils::read_packet,
 };
 
 macro_rules! into_wrap {
@@ -20,24 +21,16 @@ macro_rules! into_wrap {
 }
 
 /// Configuration for the SFTP server.
-///
-/// Note: this is a #[non_exhaustive] struct to enable forwards compatibility.
-/// To construct, use the `ServerConfig::default()`.
-#[non_exhaustive]
 #[derive(Clone, Debug)]
-pub struct ServerConfig {
-    /// Maximum allowed size of SFTP packets sent by clients.
-    ///
-    /// Protects against malicious clients sending excessively large packets.
+pub struct Config {
+    /// Maximum allowed size of SFTP packets sent by clients. Default: 256 KiB.
     pub max_client_packet_len: u32,
 }
 
-impl Default for ServerConfig {
+impl Default for Config {
     fn default() -> Self {
         Self {
-            // Most SFTP clients use 32 kb, even when writing large files.
-            // A larger but sane default is set for compatibility.
-            max_client_packet_len: 1 * 1024 * 1024, // 1 MiB
+            max_client_packet_len: 262144,
         }
     }
 }
@@ -73,16 +66,12 @@ where
     }
 }
 
-async fn process_handler<H, S>(
-    stream: &mut S,
-    handler: &mut H,
-    cfg: &ServerConfig,
-) -> Result<(), Error>
+async fn process_handler<H, S>(stream: &mut S, handler: &mut H, cfg: &Config) -> Result<(), Error>
 where
     H: Handler + Send,
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    let mut bytes = crate::utils::read_packet(stream, cfg.max_client_packet_len).await?;
+    let mut bytes = read_packet(stream, cfg.max_client_packet_len).await?;
 
     let response = match Packet::try_from(&mut bytes) {
         Ok(request) => process_request(request, handler).await,
@@ -102,11 +91,11 @@ where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     H: Handler + Send + 'static,
 {
-    run_with_config(stream, handler, ServerConfig::default()).await
+    run_with_config(stream, handler, Config::default()).await
 }
 
-/// Run processing stream as SFTP with custom server configuration
-pub async fn run_with_config<S, H>(mut stream: S, mut handler: H, cfg: ServerConfig)
+/// Run processing stream as SFTP with custom configuration
+pub async fn run_with_config<S, H>(mut stream: S, mut handler: H, cfg: Config)
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     H: Handler + Send + 'static,
