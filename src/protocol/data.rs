@@ -4,6 +4,7 @@ use super::{impl_packet_for, impl_request_id, Packet, RequestId};
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Data {
     pub id: u32,
+    #[serde(with = "serde_bytes")]
     pub data: Vec<u8>,
 }
 
