@@ -1,5 +1,5 @@
 use bytes::Bytes;
-use flurry::HashMap;
+use dashmap::DashMap as HashMap;
 use std::{
     sync::{
         atomic::{AtomicU32, AtomicU64, Ordering},
@@ -36,7 +36,7 @@ pub(crate) struct SessionInner {
 
 impl SessionInner {
     pub async fn reply(&mut self, id: Option<u32>, packet: Packet) -> SftpResult<()> {
-        if let Some(sender) = self.requests.pin().remove(&id) {
+        if let Some((_, sender)) = Arc::pin(&self.requests).remove(&id) {
             let validate = if id.is_some() && self.version.is_none() {
                 Err(Error::UnexpectedPacket)
             } else if id.is_none() && self.version.is_some() {
@@ -204,7 +204,7 @@ impl RawSftpSession {
 
         let (tx, mut rx) = mpsc::channel(1);
 
-        self.requests.pin().insert(id, tx);
+        Arc::pin(&self.requests).insert(id, tx);
         self.tx.send(Bytes::try_from(packet)?)?;
 
         let timeout = *self.options.timeout.read().await;
@@ -212,11 +212,11 @@ impl RawSftpSession {
         match time::timeout(Duration::from_secs(timeout), rx.recv()).await {
             Ok(Some(result)) => result,
             Ok(None) => {
-                self.requests.pin().remove(&id);
+                Arc::pin(&self.requests).remove(&id);
                 Err(Error::UnexpectedBehavior("recv none message".into()))
             }
             Err(error) => {
-                self.requests.pin().remove(&id);
+                Arc::pin(&self.requests).remove(&id);
                 Err(error.into())
             }
         }
