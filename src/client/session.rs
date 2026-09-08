@@ -18,8 +18,11 @@ pub(crate) struct Features {
     pub hardlink: bool,
     pub fsync: bool,
     pub statvfs: bool,
+    pub expand_path: bool,
     pub limits: Option<Limits>,
+    pub max_concurrent_reads: usize,
     pub max_concurrent_writes: usize,
+    pub max_write_packet_len: u32,
     pub max_packet_len: u32,
 }
 
@@ -39,25 +42,14 @@ impl SftpSession {
         Self::new_with_config(stream, Config::default()).await
     }
 
-    /// Creates a new session with timeout opt before the first request
-    #[deprecated(note = "use SftpSession::new_with_config with Config::req_timeout_secs instead")]
-    pub async fn new_opts<S>(stream: S, timeout: Option<u64>) -> SftpResult<Self>
-    where
-        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
-    {
-        let mut cfg = Config::default();
-        if let Some(secs) = timeout {
-            cfg.request_timeout_secs = secs;
-        }
-        Self::new_with_config(stream, cfg).await
-    }
-
     /// Creates a new session with custom configuration
     pub async fn new_with_config<S>(stream: S, cfg: Config) -> SftpResult<Self>
     where
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
-        let max_concurrent_writes = cfg.max_concurrent_writes;
+        let max_concurrent_reads = cfg.max_concurrent_reads.max(1);
+        let max_concurrent_writes = cfg.max_concurrent_writes.max(1);
+        let max_write_packet_len = cfg.max_write_packet_len;
         let max_packet_len = cfg.max_packet_len;
         let mut session = RawSftpSession::new_with_config(stream, cfg);
 
@@ -68,8 +60,11 @@ impl SftpSession {
             hardlink: has_extension(extensions::HARDLINK, "1"),
             fsync: has_extension(extensions::FSYNC, "1"),
             statvfs: has_extension(extensions::STATVFS, "2"),
+            expand_path: has_extension(extensions::EXPAND_PATH, "1"),
             limits: None,
+            max_concurrent_reads,
             max_concurrent_writes,
+            max_write_packet_len,
             max_packet_len,
         };
 
@@ -159,6 +154,7 @@ impl SftpSession {
         let mut buffer = Vec::new();
 
         file.read_to_end(&mut buffer).await?;
+        file.close().await?;
 
         Ok(buffer)
     }
@@ -167,6 +163,7 @@ impl SftpSession {
     pub async fn write<P: Into<String>>(&self, path: P, data: &[u8]) -> SftpResult<()> {
         let mut file = self.open_with_flags(path, OpenFlags::WRITE).await?;
         file.write_all(data).await?;
+        file.close().await?;
         Ok(())
     }
 
@@ -194,7 +191,7 @@ impl SftpSession {
                         .files
                         .into_iter()
                         .map(|f| (f.filename, f.attrs))
-                        .chain(files.into_iter())
+                        .chain(files)
                         .collect();
                 }
                 Err(Error::Status(status)) if status.status_code == StatusCode::Eof => break,
@@ -278,12 +275,26 @@ impl SftpSession {
     }
 
     /// Performs a statvfs on the remote file system path.
-    /// Returns [`Ok(None)`] if the remote SFTP server does not support `statvfs@openssh.com` extension v2.
+    /// Returns `Ok(None)` if the remote SFTP server does not support `statvfs@openssh.com` extension v2.
     pub async fn fs_info<P: Into<String>>(&self, path: P) -> SftpResult<Option<Statvfs>> {
         if !self.features.statvfs {
             return Ok(None);
         }
 
         self.session.statvfs(path).await.map(Some)
+    }
+
+    /// Expands a `~`/`~user`-prefixed or relative path and returns its canonicalized absolute form.
+    /// Returns `Ok(None)` if the remote SFTP server does not support `expand-path@openssh.com` extension v1.
+    pub async fn expand_path<P: Into<String>>(&self, path: P) -> SftpResult<Option<String>> {
+        if !self.features.expand_path {
+            return Ok(None);
+        }
+
+        let name = self.session.expand_path(path).await?;
+        match name.files.first() {
+            Some(file) => Ok(Some(file.filename.to_owned())),
+            None => Err(Error::UnexpectedBehavior("no file".to_owned())),
+        }
     }
 }

@@ -2,10 +2,8 @@ use std::io;
 use thiserror::Error;
 use tokio::sync::mpsc::error::SendError as MpscSendError;
 use tokio::sync::oneshot::error::RecvError as OneshotRecvError;
-use tokio::time::error::Elapsed as TimeElapsed;
 
-use crate::error;
-use crate::protocol::Status;
+use crate::{error, protocol::Status};
 
 /// Enum for client errors
 #[derive(Debug, Clone, Error)]
@@ -38,7 +36,10 @@ impl From<Status> for Error {
 
 impl From<io::Error> for Error {
     fn from(error: io::Error) -> Self {
-        Self::IO(error.to_string())
+        match error.kind() {
+            io::ErrorKind::TimedOut => Self::Timeout,
+            _ => Self::IO(error.to_string()),
+        }
     }
 }
 
@@ -54,14 +55,18 @@ impl From<OneshotRecvError> for Error {
     }
 }
 
-impl From<TimeElapsed> for Error {
-    fn from(_: TimeElapsed) -> Self {
-        Self::Timeout
-    }
-}
-
 impl From<error::Error> for Error {
     fn from(error: error::Error) -> Self {
         Self::UnexpectedBehavior(error.to_string())
+    }
+}
+
+impl From<Error> for io::Error {
+    fn from(error: Error) -> Self {
+        let kind = match error {
+            Error::Timeout => io::ErrorKind::TimedOut,
+            _ => io::ErrorKind::Other,
+        };
+        Self::new(kind, error)
     }
 }
